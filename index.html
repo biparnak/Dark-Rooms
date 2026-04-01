@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dark Room - Floor Progression</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #020202; color: #ddd; font-family: Verdana, Arial, sans-serif; }
+    #app { width: 100%; height: 100%; position: relative; }
+    .screen { display: none; width: 100%; height: 100%; position: absolute; inset: 0; align-items: center; justify-content: center; background: rgba(0,0,0,0.8); }
+    .screen.active { display: flex; }
+    .panel { width: min(860px, 92%); padding: 20px; background: rgba(10,10,10,0.95); border: 1px solid #4a0000; border-radius: 12px; box-shadow: 0 0 24px rgba(0,0,0,0.8); }
+    h1, h2 { margin-bottom: 16px; color: #f9f9f9; text-align: center; }
+    .buttons { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+    button { border: 1px solid #660000; background: #1c1c1c; color: #fff; padding: 10px 14px; border-radius: 7px; cursor: pointer; font-size: 0.95rem; }
+    button:hover { background: #330000; }
+    #levelGrid { display: grid; grid-template-columns: repeat(5, minmax(80px, 1fr)); gap: 10px; margin-top: 14px; }
+    .levelBtn { border: 1px solid #560000; border-radius: 8px; padding: 12px 8px; text-align: center; background: #151515; color: #ddd; cursor: pointer; }
+    .levelBtn.locked { opacity: 0.35; cursor: not-allowed; }
+    .levelBtn.unlocked { border-color: #18a20e; }
+    #gameCanvas { background: #031012; border: 2px solid #2b0000; width: min(calc(100vw - 40px), 800px); height: min(calc(100vh - 110px), 620px); display: block; margin: 0 auto; }
+    #hud { position: absolute; top: 12px; left: 12px; z-index: 10; background: rgba(0,0,0,0.68); border: 1px solid #444; border-radius: 8px; color: #f5f5f5; padding: 9px 12px; font-size: 0.83rem; line-height: 1.4; }
+    #instructions { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.6); border-radius: 8px; padding: 8px 10px; font-size: 0.76rem; max-width: 280px; }
+    .hidden { display: none !important; }
+    .spinner { font-weight: bold; margin-top: 8px; text-align: center; color: #f4d24b; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="mainMenu" class="screen active">
+      <div class="panel">
+        <h1>Dark Room</h1>
+        <p style="text-align:center; margin-bottom: 18px;">Progress through 10 floors. Locked levels open only after clearing earlier floors.</p>
+        <div class="buttons">
+          <button id="goLevels">Choose Level</button>
+          <button id="openSettings">Settings</button>
+          <button id="showAbout">About</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="levelsScreen" class="screen">
+      <div class="panel">
+        <h2>Select Floor</h2>
+        <div id="levelGrid"></div>
+        <div class="buttons"><button id="backToMenu2">Back</button></div>
+      </div>
+    </div>
+
+    <div id="settingsScreen" class="screen">
+      <div class="panel">
+        <h2>Settings</h2>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin:12px 0;"><span>Difficulty:</span><select id="difficulty"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option></select></div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin:12px 0;"><span>Sound:</span><input id="soundEnabled" type="checkbox" checked></div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin:12px 0;"><span>Grid:</span><input id="gridEnabled" type="checkbox" checked></div>
+        <div class="buttons"><button id="applySettings">Apply</button><button id="backToMenu3">Back</button></div>
+      </div>
+    </div>
+
+    <div id="aboutScreen" class="screen">
+      <div class="panel">
+        <h2>About Dark Room</h2>
+        <p>Top view horror game with 10 floors. Each floor is locked until previous floor is completed. Survive the anomaly and escape!</p>
+        <div class="buttons"><button id="backToMenu4">Back</button></div>
+      </div>
+    </div>
+
+    <div id="gameScreen" class="screen">
+      <div class="panel" style="position:relative; padding:10px;">
+        <h2 id="activeLevelTitle" style="margin-top:0;">Floor ???</h2>
+        <canvas id="gameCanvas" width="640" height="480"></canvas>
+        <div id="hud"></div>
+        <div id="instructions">Move: Mouse cursor. ESC: pause. Reach green exit.</div>
+        <div class="buttons" style="margin-top: 12px; justify-content: center;"><button id="exitToLevelSelect">Level Select</button></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const COLS = 16, ROWS = 12, LEVELS = 10, TILE = 40;
+    const appScreens = { menu: 'mainMenu', levels: 'levelsScreen', settings: 'settingsScreen', about: 'aboutScreen', game: 'gameScreen' };
+    const state = { phase: 'menu', unlockedUpto: 1, currentLevel: 1, config: { difficulty: 'normal', sound: true, showGrid: true }, data: null };
+
+    const el = (id) => document.getElementById(id);
+    const canvas = el('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const music = {
+      home: new Audio('Homepage.mp3'),
+      gameplay1: new Audio('Gameplay1.mp3'),
+      gameplay2: new Audio('Gameplay2.mp3'),
+      gameover: new Audio('Game-over.mp3')
+    };
+    Object.values(music).forEach((m) => { m.loop = true; m.volume = 0.45; });
+    let currentMusic = null;
+
+    function playMusic(track) {
+      if (!music[track]) return;
+      if (currentMusic && !currentMusic.paused) currentMusic.pause();
+      if (currentMusic) currentMusic.currentTime = 0;
+      currentMusic = music[track];
+      currentMusic.play().catch(() => {});
+    }
+
+    function stopMusic() {
+      if (currentMusic) { currentMusic.pause(); currentMusic.currentTime = 0; }
+      currentMusic = null;
+    }
+
+    const saveProgress = () => localStorage.setItem('darkroom-unlocked', state.unlockedUpto);
+    const loadProgress = () => {
+      const v = parseInt(localStorage.getItem('darkroom-unlocked'), 10);
+      if (!isNaN(v) && v >= 1 && v <= LEVELS) state.unlockedUpto = v;
+    };
+
+    const setScreen = (screen) => {
+      Object.values(appScreens).forEach((id) => el(id).classList.remove('active'));
+      el(appScreens[screen]).classList.add('active');
+      state.phase = screen;
+      if (screen === 'menu') playMusic('home');
+      if (screen === 'levels' || screen === 'settings' || screen === 'about') playMusic('home');
+      if (screen === 'game' && !state.data) playMusic('home');
+    };
+
+    const pickMap = (level) => {
+      const grid = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          if (x === 0 || x === COLS - 1 || y === 0 || y === ROWS - 1) grid[y][x] = 1;
+          else grid[y][x] = 0;
+        }
+      }
+
+      const start = { x: 1, y: 1 };
+      const exit = { x: COLS - 2, y: ROWS - 2 };
+
+      // Make level 1 a simpler explicit maze.
+      if (level === 1) {
+        for (let y = 2; y < ROWS - 2; y += 2) {
+          for (let x = 2; x < COLS - 2; x++) {
+            grid[y][x] = 1;
+          }
+          const hole = 2 + Math.floor(Math.random() * (COLS - 4));
+          grid[y][hole] = 0;
+        }
+      }
+
+      const guaranteedPath = [{ x: start.x, y: start.y }];
+      let cx = start.x;
+      let cy = start.y;
+      while (cx !== exit.x || cy !== exit.y) {
+        if (cx < exit.x && (cy === exit.y || Math.random() > 0.5)) cx++;
+        else if (cy < exit.y) cy++;
+        guaranteedPath.push({ x: cx, y: cy });
+      }
+      guaranteedPath.forEach(({ x, y }) => { grid[y][x] = 0; });
+
+      const baseWalls = level === 1 ? 14 : level <= 3 ? 20 : level <= 5 ? 38 : level <= 7 ? 56 : level <= 9 ? 70 : 84;
+      let walls = Math.min(220, baseWalls + Math.floor(level * 2.4));
+      while (walls > 0) {
+        const x = 1 + Math.floor(Math.random() * (COLS - 2));
+        const y = 1 + Math.floor(Math.random() * (ROWS - 2));
+        const isPath = guaranteedPath.some((p) => p.x === x && p.y === y);
+        if (isPath || (x === start.x && y === start.y) || (x === exit.x && y === exit.y)) continue;
+        if (grid[y][x] === 1) continue;
+        grid[y][x] = 1;
+        walls--;
+      }
+
+      if (level > 5) {
+        // extra complexity for higher levels: insert loops and dead ends
+        const extra = Math.min(40, level * 3);
+        for (let i = 0; i < extra; i++) {
+          const x = 1 + Math.floor(Math.random() * (COLS - 2));
+          const y = 1 + Math.floor(Math.random() * (ROWS - 2));
+          if (grid[y][x] === 0 && !(x === start.x && y === start.y) && !(x === exit.x && y === exit.y)) {
+            const neighbors = ((grid[y-1][x]===1)?1:0)+((grid[y+1][x]===1)?1:0)+((grid[y][x-1]===1)?1:0)+((grid[y][x+1]===1)?1:0);
+            if (neighbors >= 2) grid[y][x] = 1;
+          }
+        }
+      }
+
+      return grid;
+    };
+
+    const initLevel = (level) => {
+      state.currentLevel = level;
+      const base = { easy: { health: 120, time: 120, speed: 0.3 }, normal: { health: 100, time: 100, speed: 0.35 }, hard: { health: 82, time: 90, speed: 0.42 } }[state.config.difficulty];
+      state.data = {
+        map: pickMap(level),
+        player: { x: 1, y: 1, radius: 0.35 },
+        anomaly: { x: COLS - 2, y: 1 },
+        exit: { x: COLS - 2, y: ROWS - 2 },
+        health: base.health,
+        timeLeft: base.time,
+        tick: 0,
+        levelTime: 0,
+        difficultyInfo: base,
+        played: false,
+        hasAnomaly: level >= 3,
+        slowAnomalyMode: level >= 3 && level <= 5,
+        chaseReroute: level >= 6 && level <= 7,
+        teleportPlayer: level >= 8,
+        anomalyThroughWalls: level >= 8,
+        isBoss: level === 10,
+        anomalyCooldown: 0,
+        nextReroute: 2.5,
+        nextTeleport: 4
+      };
+      el('activeLevelTitle').textContent = `Floor ${level}`;
+      setScreen('game');
+      // choose one of the two gameplay tracks
+      playMusic(Math.random() < 0.5 ? 'gameplay1' : 'gameplay2');
+      lastFrame = performance.now();
+      requestAnimationFrame(loop);
+    };
+
+    const levelButtons = () => {
+      const container = el('levelGrid');
+      container.innerHTML = '';
+      for (let i = 1; i <= LEVELS; i++) {
+        const btn = document.createElement('div');
+        btn.classList.add('levelBtn');
+        btn.textContent = `Floor ${i}`;
+        if (i <= state.unlockedUpto) {
+          btn.classList.add('unlocked');
+          btn.addEventListener('click', () => initLevel(i));
+        } else {
+          btn.classList.add('locked');
+          btn.textContent = `Locked\n(${i})`;
+        }
+        container.appendChild(btn);
+      }
+    };
+
+    const soundBeep = () => {
+      if (!state.config.sound) return;
+      const o = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = o.createOscillator();
+      const gain = o.createGain();
+      osc.type = 'square'; gain.gain.value = 0.06; osc.frequency.value = 320;
+      osc.connect(gain); gain.connect(o.destination);
+      osc.start(); osc.stop(o.currentTime + 0.07);
+    };
+
+    const draw = () => {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      const mx = canvas.width / COLS;
+      const my = canvas.height / ROWS;
+      for (let y=0;y<ROWS;y++){
+        for (let x=0;x<COLS;x++){
+          if (state.data.map[y][x]===1) ctx.fillStyle='#323232';
+          else {
+            const shade = 30 + (state.currentLevel / LEVELS) * 40;
+            ctx.fillStyle=`rgb(${shade},${shade-2},${shade+8})`;
+          }
+          ctx.fillRect(x*mx,y*my,mx,my);
+          if (state.config.showGrid) {
+            ctx.strokeStyle='rgba(125,20,20,0.18)'; ctx.lineWidth=1; ctx.strokeRect(x*mx,y*my,mx,my);
+          }
+        }
+      }
+      ctx.fillStyle='#16c93f'; ctx.fillRect(state.data.exit.x*mx+3, state.data.exit.y*my+3, mx-6, my-6);
+      ctx.fillStyle='#3de84f'; ctx.beginPath(); ctx.arc(state.data.player.x*mx+mx/2, state.data.player.y*my+my/2, mx*state.data.player.radius, 0, Math.PI*2); ctx.fill();
+      if (state.data.hasAnomaly) {
+        ctx.fillStyle='#d12323'; ctx.beginPath(); ctx.arc(state.data.anomaly.x*mx+mx/2, state.data.anomaly.y*my+my/2, Math.min(mx,my)/3, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle='#ff8c8c'; ctx.lineWidth=2; ctx.stroke();
+      }
+      el('hud').innerHTML = `<strong>Floor ${state.currentLevel}/${LEVELS}</strong> • HP ${Math.max(0,state.data.health)} • ${Math.ceil(state.data.timeLeft)}s left${state.data.hasAnomaly ? ' • Anomaly: ' + chooseAnomalyName() : ' • Safe: No anomaly'}`;
+    };
+
+    const chooseAnomalyName = () => {
+      const names = ['The Wanderer','The Shadestalker','The Whisper','Cold Eye','Rift Keeper'];
+      return names[(state.currentLevel-1) % names.length];
+    };
+
+    const canWalk = (x,y)=>x>=0&&x<COLS&&y>=0&&y<ROWS&&state.data.map[y][x]===0;
+
+    let keys = {};
+    let mouseX = 0, mouseY = 0;
+    document.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      mouseX = (e.clientX - rect.left) / rect.width * COLS;
+      mouseY = (e.clientY - rect.top) / rect.height * ROWS;
+    });
+    document.addEventListener('keydown', (e) => { if (e.code==='Escape' && state.phase==='game') { state.data.paused = !state.data.paused; if (state.data.paused) { showMessage('Paused', 'Press ESC to resume'); } else { hideMessage(); lastFrame=performance.now(); requestAnimationFrame(loop);} } keys[e.code]=true; });
+    document.addEventListener('keyup', (e)=>keys[e.code]=false);
+
+    let lastFrame = 0;
+    const showMessage = (t,m) => {
+      const p=el('aboutScreen');
+      const popup = document.createElement('div');
+      popup.style.position='fixed'; popup.style.inset='0'; popup.style.display='flex'; popup.style.alignItems='center'; popup.style.justifyContent='center';
+      popup.style.background='rgba(0,0,0,0.7)';
+      popup.innerHTML=`<div style='background:#121212;border:1px solid #850000;padding:18px;border-radius:10px;text-align:center;color:#e6e6e6;max-width:320px;'><h3>${t}</h3><p>${m}</p><button style='margin-top:10px;padding:8px 12px;border:1px solid #550000;background:#1f1f1f;color:#fff;border-radius:6px;'>Close</button></div>`;
+      document.body.appendChild(popup);
+      popup.querySelector('button').addEventListener('click', () => { document.body.removeChild(popup); });
+    };
+
+    const hideMessage = () => {};
+
+    const clearLevelToNext = () => {
+      state.data.paused = true;
+      if (state.currentLevel >= LEVELS) {
+        showMessage('Victory', 'You escaped all floors! Restarting to menu.');
+      } else {
+        showMessage('Floor Cleared', `You beat floor ${state.currentLevel}! Level ${state.currentLevel+1} unlocked.`);
+      }
+      if (state.currentLevel >= state.unlockedUpto) {
+        state.unlockedUpto = Math.min(LEVELS, state.currentLevel + 1);
+        saveProgress();
+      }
+      setTimeout(() => { setScreen('levels'); levelButtons(); }, 1100);
+    };
+
+    const gameOver = () => {
+      state.data.paused = true;
+      if (state.currentLevel === LEVELS) {
+        playMusic('gameover');
+        const overlay = document.createElement('div');
+        overlay.id = 'deathOverlay';
+        overlay.style.position = 'fixed';
+        overlay.style.inset = '0';
+        overlay.style.background = 'rgba(0,0,0,0.95)';
+        overlay.style.display = 'flex';
+        overlay.style.alignItems = 'center';
+        overlay.style.justifyContent = 'center';
+        overlay.style.zIndex = '999';
+        overlay.innerHTML = "<img src='Scary-ghost.png' style='max-width:70%;max-height:70%;border: 3px solid #aa1111;border-radius:12px;' alt='Scary ghost' />";
+        document.body.appendChild(overlay);
+        setTimeout(() => {
+          if (document.body.contains(overlay)) document.body.removeChild(overlay);
+          showMessage('Game Over', `You died on Floor ${state.currentLevel}, darkest path failed.`);
+          setTimeout(() => { setScreen('levels'); levelButtons(); }, 1200);
+        }, 3000);
+      } else {
+        playMusic('gameover');
+        showMessage('Game Over', `You died on floor ${state.currentLevel}. Try again.`);
+        setTimeout(() => { setScreen('levels'); levelButtons(); }, 1300);
+      }
+      soundBeep();
+    };
+
+    const update = (dt) => {
+      if (!state.data || state.data.paused) return;
+      state.data.tick += dt;
+      state.data.timeLeft -= dt;
+      if (state.data.timeLeft <= 0) state.data.health = 0;
+      const moveEvery = 0.12 / (state.data.difficultyInfo.speed || 1);
+      if (state.data.tick >= moveEvery) {
+        state.data.tick = 0;
+        const dx = mouseX - state.data.player.x;
+        const dy = mouseY - state.data.player.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist > 0.02) {
+          // match cursor movement but avoid tunneling through walls
+          const targetX = mouseX;
+          const targetY = mouseY;
+          const steps = Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) * 3);
+          let px = state.data.player.x;
+          let py = state.data.player.y;
+          for (let i = 1; i <= steps; i++) {
+            const t = i / steps;
+            const nx = state.data.player.x + dx * t;
+            const ny = state.data.player.y + dy * t;
+            if (!canWalk(Math.round(nx), Math.round(ny))) break;
+            px = nx;
+            py = ny;
+          }
+          state.data.player.x = px;
+          state.data.player.y = py;
+          // if path is open to cursor exactly, snap to it
+          if (canWalk(Math.round(targetX), Math.round(targetY))) {
+            state.data.player.x = targetX;
+            state.data.player.y = targetY;
+          }
+        }
+      }
+      if (state.data.hasAnomaly) {
+        state.data.anomalyCooldown -= dt;
+        if (state.data.anomalyCooldown <= 0) {
+          const rate = state.data.isBoss ? 0.28 : state.currentLevel === 8 ? 0.16 : state.currentLevel === 9 ? 0.22 : 0.34;
+          state.data.anomalyCooldown = rate / (state.data.difficultyInfo.speed || 1);
+
+          let ax = state.data.anomaly.x, ay = state.data.anomaly.y;
+          const pdx = state.data.player.x - ax;
+          const pdy = state.data.player.y - ay;
+          if (Math.random() < (state.data.isBoss ? 0.85 : 0.92)) {
+            if (Math.abs(pdx) > Math.abs(pdy)) ax += Math.sign(pdx); else ay += Math.sign(pdy);
+          } else {
+            if (Math.random() > 0.5) ax += (Math.random() > 0.5 ? 1 : -1); else ay += (Math.random() > 0.5 ? 1 : -1);
+          }
+
+          if (state.data.anomalyThroughWalls || canWalk(ax, ay)) {
+            state.data.anomaly.x = ax;
+            state.data.anomaly.y = ay;
+          }
+
+          const pdist = Math.sqrt(Math.pow(state.data.player.x - state.data.anomaly.x, 2) + Math.pow(state.data.player.y - state.data.anomaly.y, 2));
+          if (pdist < 0.8) {
+            state.data.health -= state.config.difficulty === 'hard' ? 16 : state.config.difficulty === 'normal' ? 12 : 8;
+            state.data.player.x = 1;
+            state.data.player.y = 1;
+            soundBeep();
+          }
+        }
+      }
+
+      // level 6-7 reroute to random exit position
+      if (state.data.chaseReroute) {
+        if (state.data.levelTime >= state.data.nextReroute) {
+          state.data.nextReroute += 3 + Math.random() * 2;
+          const candidates = [];
+          for (let y = 1; y < ROWS - 1; y++) {
+            for (let x = 1; x < COLS - 1; x++) {
+              if (state.data.map[y][x] === 0) candidates.push({ x, y });
+            }
+          }
+          const choice = candidates[Math.floor(Math.random() * candidates.length)];
+          if (choice) state.data.exit = { x: choice.x, y: choice.y };
+        }
+      }
+
+      // level 8+ teleport player randomly
+      if (state.data.teleportPlayer && state.data.levelTime >= state.data.nextTeleport) {
+        state.data.nextTeleport += 4 + Math.random() * 3;
+        const openTiles = [];
+        for (let y = 1; y < ROWS - 1; y++) {
+          for (let x = 1; x < COLS - 1; x++) {
+            if (state.data.map[y][x] === 0 && !(x === state.data.exit.x && y === state.data.exit.y)) {
+              openTiles.push({ x, y });
+            }
+          }
+        }
+        const pos = openTiles[Math.floor(Math.random() * openTiles.length)];
+        if (pos) {
+          state.data.player.x = pos.x;
+          state.data.player.y = pos.y;
+        }
+      }
+
+      if (state.data.health <= 0) { gameOver(); }
+      const exitDist = Math.hypot(state.data.player.x - state.data.exit.x, state.data.player.y - state.data.exit.y);
+      if (exitDist < 0.55) { clearLevelToNext(); }
+      draw();
+    };
+
+    const loop = (now) => {
+      if (state.phase !== 'game') return;
+      const dt = (now - lastFrame) / 1000;
+      lastFrame = now;
+      if (!state.data.paused) update(dt);
+      requestAnimationFrame(loop);
+    };
+
+    document.querySelector('#goLevels').addEventListener('click', () => { levelButtons(); setScreen('levels'); });
+    document.querySelector('#openSettings').addEventListener('click', () => { setScreen('settings'); });
+    document.querySelector('#showAbout').addEventListener('click', () => { setScreen('about'); });
+    document.querySelector('#backToMenu2').addEventListener('click', () => { setScreen('menu'); });
+    document.querySelector('#backToMenu3').addEventListener('click', () => { setScreen('menu'); });
+    document.querySelector('#backToMenu4').addEventListener('click', () => { setScreen('menu'); });
+    document.querySelector('#exitToLevelSelect').addEventListener('click', () => { setScreen('levels'); levelButtons(); });
+
+    el('applySettings').addEventListener('click', () => {
+      state.config.difficulty = el('difficulty').value;
+      state.config.sound = el('soundEnabled').checked;
+      state.config.showGrid = el('gridEnabled').checked;
+      alert('Settings saved.');
+    });
+
+    loadProgress();
+    el('difficulty').value = state.config.difficulty;
+    el('soundEnabled').checked = state.config.sound;
+    el('gridEnabled').checked = state.config.showGrid;
+    levelButtons();
+  </script>
+</body>
+</html>
